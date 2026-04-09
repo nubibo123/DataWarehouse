@@ -117,15 +117,201 @@ WHERE Cancelled_i = 0
   AND CRSElapsedTime_i IS NULL;
 
 
-/* 6) TAO BANG CLEAN DE NAP DW */
+/* 6) BUSINESS RULES FINAL: TACH REJECT/CLEAN + DQ FLAG */
+DROP TABLE IF EXISTS dbo.stg_flight_reject;
 DROP TABLE IF EXISTS dbo.stg_flight_clean;
 
-SELECT *
-INTO dbo.stg_flight_clean
-FROM dbo.stg_flight_typed
-WHERE Duplicate_c = 'N'
-  AND FlightDate_d IS NOT NULL
-  AND Origin_c IS NOT NULL
-  AND Dest_c IS NOT NULL;
+;WITH rules AS (
+    SELECT
+        t.*,
 
+        /* Hard rules: vi pham se bi reject */
+        CASE WHEN t.Duplicate_c IS NULL OR t.Duplicate_c <> 'N' THEN 1 ELSE 0 END AS r_duplicate,
+        CASE WHEN t.FlightDate_d IS NULL THEN 1 ELSE 0 END AS r_flightdate_invalid,
+        CASE WHEN t.Origin_c IS NULL OR LEN(t.Origin_c) <> 3 THEN 1 ELSE 0 END AS r_origin_invalid,
+        CASE WHEN t.Dest_c IS NULL OR LEN(t.Dest_c) <> 3 THEN 1 ELSE 0 END AS r_dest_invalid,
+        CASE WHEN t.Cancelled_i NOT IN (0,1) OR t.Cancelled_i IS NULL THEN 1 ELSE 0 END AS r_cancelled_invalid,
+        CASE WHEN t.Diverted_i NOT IN (0,1) OR t.Diverted_i IS NULL THEN 1 ELSE 0 END AS r_diverted_invalid,
+        CASE WHEN t.Distance_n IS NULL OR t.Distance_n <= 0 THEN 1 ELSE 0 END AS r_distance_invalid,
+        CASE WHEN t.Flights_i IS NULL OR t.Flights_i < 1 THEN 1 ELSE 0 END AS r_flights_invalid,
+
+        /* Soft rules: khong reject, chi gan canh bao */
+        CASE
+            WHEN ISNULL(t.Cancelled_i,0) = 0
+             AND ISNULL(t.Diverted_i,0) = 0
+             AND (t.CRSElapsedTime_i IS NULL OR t.CRSElapsedTime_i <= 0)
+            THEN 1 ELSE 0
+        END AS w_elapsed_missing_on_normal,
+        CASE
+            WHEN t.CRSDepTime_i IS NOT NULL
+             AND NOT (t.CRSDepTime_i BETWEEN 0 AND 2359 AND (t.CRSDepTime_i % 100) < 60)
+            THEN 1 ELSE 0
+        END AS w_deptime_invalid,
+        CASE
+            WHEN t.CRSArrTime_i IS NOT NULL
+             AND NOT (t.CRSArrTime_i BETWEEN 0 AND 2359 AND (t.CRSArrTime_i % 100) < 60)
+            THEN 1 ELSE 0
+        END AS w_arrtime_invalid
+    FROM dbo.stg_flight_typed t
+),
+scored AS (
+    SELECT
+        r.*,
+        CASE
+            WHEN r.r_duplicate + r.r_flightdate_invalid + r.r_origin_invalid + r.r_dest_invalid
+               + r.r_cancelled_invalid + r.r_diverted_invalid + r.r_distance_invalid + r.r_flights_invalid > 0
+            THEN 1 ELSE 0
+        END AS IsRejected,
+        CASE
+            WHEN r.w_elapsed_missing_on_normal + r.w_deptime_invalid + r.w_arrtime_invalid > 0
+            THEN 1 ELSE 0
+        END AS DQFlag,
+
+        CONCAT(
+            CASE WHEN r.r_duplicate = 1 THEN ';Duplicate_not_N' ELSE '' END,
+            CASE WHEN r.r_flightdate_invalid = 1 THEN ';FlightDate_invalid' ELSE '' END,
+            CASE WHEN r.r_origin_invalid = 1 THEN ';Origin_invalid' ELSE '' END,
+            CASE WHEN r.r_dest_invalid = 1 THEN ';Dest_invalid' ELSE '' END,
+            CASE WHEN r.r_cancelled_invalid = 1 THEN ';Cancelled_not_0_1' ELSE '' END,
+            CASE WHEN r.r_diverted_invalid = 1 THEN ';Diverted_not_0_1' ELSE '' END,
+            CASE WHEN r.r_distance_invalid = 1 THEN ';Distance_invalid' ELSE '' END,
+            CASE WHEN r.r_flights_invalid = 1 THEN ';Flights_invalid' ELSE '' END
+        ) AS RejectReasonRaw,
+
+        CONCAT(
+            CASE WHEN r.w_elapsed_missing_on_normal = 1 THEN ';Elapsed_missing_normal_flight' ELSE '' END,
+            CASE WHEN r.w_deptime_invalid = 1 THEN ';CRSDepTime_invalid' ELSE '' END,
+            CASE WHEN r.w_arrtime_invalid = 1 THEN ';CRSArrTime_invalid' ELSE '' END
+        ) AS WarningReasonRaw
+    FROM rules r
+),
+finalized AS (
+    SELECT
+        s.*,
+        CASE WHEN LEFT(s.RejectReasonRaw,1) = ';' THEN STUFF(s.RejectReasonRaw,1,1,'') ELSE s.RejectReasonRaw END AS RejectReason,
+        CASE WHEN LEFT(s.WarningReasonRaw,1) = ';' THEN STUFF(s.WarningReasonRaw,1,1,'') ELSE s.WarningReasonRaw END AS WarningReason,
+
+        CASE
+            WHEN s.CRSElapsedTime_i IS NOT NULL AND s.CRSElapsedTime_i > 0 THEN s.CRSElapsedTime_i
+            WHEN ISNULL(s.Cancelled_i,0) = 1 OR ISNULL(s.Diverted_i,0) = 1 THEN NULL
+            WHEN s.CRSDepTime_i BETWEEN 0 AND 2359
+             AND s.CRSArrTime_i BETWEEN 0 AND 2359
+             AND (s.CRSDepTime_i % 100) < 60
+             AND (s.CRSArrTime_i % 100) < 60
+            THEN
+                CASE
+                    WHEN (((s.CRSArrTime_i / 100) * 60 + (s.CRSArrTime_i % 100))
+                        - ((s.CRSDepTime_i / 100) * 60 + (s.CRSDepTime_i % 100))) < 0
+                    THEN (((s.CRSArrTime_i / 100) * 60 + (s.CRSArrTime_i % 100))
+                        - ((s.CRSDepTime_i / 100) * 60 + (s.CRSDepTime_i % 100)) + 1440)
+                    ELSE (((s.CRSArrTime_i / 100) * 60 + (s.CRSArrTime_i % 100))
+                        - ((s.CRSDepTime_i / 100) * 60 + (s.CRSDepTime_i % 100)))
+                END
+            ELSE NULL
+        END AS CRSElapsedTime_final
+    FROM scored s
+)
+SELECT
+    *
+INTO dbo.stg_flight_reject
+FROM finalized
+WHERE IsRejected = 1;
+
+;WITH rules AS (
+    SELECT
+        t.*,
+        CASE WHEN t.Duplicate_c IS NULL OR t.Duplicate_c <> 'N' THEN 1 ELSE 0 END AS r_duplicate,
+        CASE WHEN t.FlightDate_d IS NULL THEN 1 ELSE 0 END AS r_flightdate_invalid,
+        CASE WHEN t.Origin_c IS NULL OR LEN(t.Origin_c) <> 3 THEN 1 ELSE 0 END AS r_origin_invalid,
+        CASE WHEN t.Dest_c IS NULL OR LEN(t.Dest_c) <> 3 THEN 1 ELSE 0 END AS r_dest_invalid,
+        CASE WHEN t.Cancelled_i NOT IN (0,1) OR t.Cancelled_i IS NULL THEN 1 ELSE 0 END AS r_cancelled_invalid,
+        CASE WHEN t.Diverted_i NOT IN (0,1) OR t.Diverted_i IS NULL THEN 1 ELSE 0 END AS r_diverted_invalid,
+        CASE WHEN t.Distance_n IS NULL OR t.Distance_n <= 0 THEN 1 ELSE 0 END AS r_distance_invalid,
+        CASE WHEN t.Flights_i IS NULL OR t.Flights_i < 1 THEN 1 ELSE 0 END AS r_flights_invalid,
+        CASE
+            WHEN ISNULL(t.Cancelled_i,0) = 0
+             AND ISNULL(t.Diverted_i,0) = 0
+             AND (t.CRSElapsedTime_i IS NULL OR t.CRSElapsedTime_i <= 0)
+            THEN 1 ELSE 0
+        END AS w_elapsed_missing_on_normal,
+        CASE
+            WHEN t.CRSDepTime_i IS NOT NULL
+             AND NOT (t.CRSDepTime_i BETWEEN 0 AND 2359 AND (t.CRSDepTime_i % 100) < 60)
+            THEN 1 ELSE 0
+        END AS w_deptime_invalid,
+        CASE
+            WHEN t.CRSArrTime_i IS NOT NULL
+             AND NOT (t.CRSArrTime_i BETWEEN 0 AND 2359 AND (t.CRSArrTime_i % 100) < 60)
+            THEN 1 ELSE 0
+        END AS w_arrtime_invalid
+    FROM dbo.stg_flight_typed t
+),
+scored AS (
+    SELECT
+        r.*,
+        CASE
+            WHEN r.r_duplicate + r.r_flightdate_invalid + r.r_origin_invalid + r.r_dest_invalid
+               + r.r_cancelled_invalid + r.r_diverted_invalid + r.r_distance_invalid + r.r_flights_invalid > 0
+            THEN 1 ELSE 0
+        END AS IsRejected,
+        CASE
+            WHEN r.w_elapsed_missing_on_normal + r.w_deptime_invalid + r.w_arrtime_invalid > 0
+            THEN 1 ELSE 0
+        END AS DQFlag,
+        CONCAT(
+            CASE WHEN r.r_duplicate = 1 THEN ';Duplicate_not_N' ELSE '' END,
+            CASE WHEN r.r_flightdate_invalid = 1 THEN ';FlightDate_invalid' ELSE '' END,
+            CASE WHEN r.r_origin_invalid = 1 THEN ';Origin_invalid' ELSE '' END,
+            CASE WHEN r.r_dest_invalid = 1 THEN ';Dest_invalid' ELSE '' END,
+            CASE WHEN r.r_cancelled_invalid = 1 THEN ';Cancelled_not_0_1' ELSE '' END,
+            CASE WHEN r.r_diverted_invalid = 1 THEN ';Diverted_not_0_1' ELSE '' END,
+            CASE WHEN r.r_distance_invalid = 1 THEN ';Distance_invalid' ELSE '' END,
+            CASE WHEN r.r_flights_invalid = 1 THEN ';Flights_invalid' ELSE '' END
+        ) AS RejectReasonRaw,
+        CONCAT(
+            CASE WHEN r.w_elapsed_missing_on_normal = 1 THEN ';Elapsed_missing_normal_flight' ELSE '' END,
+            CASE WHEN r.w_deptime_invalid = 1 THEN ';CRSDepTime_invalid' ELSE '' END,
+            CASE WHEN r.w_arrtime_invalid = 1 THEN ';CRSArrTime_invalid' ELSE '' END
+        ) AS WarningReasonRaw
+    FROM rules r
+),
+finalized AS (
+    SELECT
+        s.*,
+        CASE WHEN LEFT(s.RejectReasonRaw,1) = ';' THEN STUFF(s.RejectReasonRaw,1,1,'') ELSE s.RejectReasonRaw END AS RejectReason,
+        CASE WHEN LEFT(s.WarningReasonRaw,1) = ';' THEN STUFF(s.WarningReasonRaw,1,1,'') ELSE s.WarningReasonRaw END AS WarningReason,
+        CASE
+            WHEN s.CRSElapsedTime_i IS NOT NULL AND s.CRSElapsedTime_i > 0 THEN s.CRSElapsedTime_i
+            WHEN ISNULL(s.Cancelled_i,0) = 1 OR ISNULL(s.Diverted_i,0) = 1 THEN NULL
+            WHEN s.CRSDepTime_i BETWEEN 0 AND 2359
+             AND s.CRSArrTime_i BETWEEN 0 AND 2359
+             AND (s.CRSDepTime_i % 100) < 60
+             AND (s.CRSArrTime_i % 100) < 60
+            THEN
+                CASE
+                    WHEN (((s.CRSArrTime_i / 100) * 60 + (s.CRSArrTime_i % 100))
+                        - ((s.CRSDepTime_i / 100) * 60 + (s.CRSDepTime_i % 100))) < 0
+                    THEN (((s.CRSArrTime_i / 100) * 60 + (s.CRSArrTime_i % 100))
+                        - ((s.CRSDepTime_i / 100) * 60 + (s.CRSDepTime_i % 100)) + 1440)
+                    ELSE (((s.CRSArrTime_i / 100) * 60 + (s.CRSArrTime_i % 100))
+                        - ((s.CRSDepTime_i / 100) * 60 + (s.CRSDepTime_i % 100)))
+                END
+            ELSE NULL
+        END AS CRSElapsedTime_final
+    FROM scored s
+)
+SELECT
+    *
+INTO dbo.stg_flight_clean
+FROM finalized
+WHERE IsRejected = 0;
+
+SELECT COUNT(*) AS reject_rows FROM dbo.stg_flight_reject;
 SELECT COUNT(*) AS clean_rows FROM dbo.stg_flight_clean;
+
+SELECT
+    DQFlag,
+    COUNT(*) AS rows_cnt
+FROM dbo.stg_flight_clean
+GROUP BY DQFlag
+ORDER BY DQFlag;
