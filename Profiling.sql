@@ -22,6 +22,34 @@ SELECT
     UPPER(NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(20), Origin))), '')) AS Origin_c,
     UPPER(NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(20), Dest))), '')) AS Dest_c,
 
+    TRY_CONVERT(int, NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(20), OriginAirportID))), '')) AS OriginAirportID_i,
+    TRY_CONVERT(int, NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(20), OriginAirportSeqID))), '')) AS OriginAirportSeqID_i,
+    TRY_CONVERT(int, NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(20), OriginCityMarketID))), '')) AS OriginCityMarketID_i,
+    NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(100), OriginCityName))), '') AS OriginCityName_c,
+    NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(10), OriginState))), '') AS OriginState_c,
+    TRY_CONVERT(int, NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(20), OriginStateFips))), '')) AS OriginStateFips_i,
+    NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(100), OriginStateName))), '') AS OriginStateName_c,
+    TRY_CONVERT(int, NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(20), OriginWac))), '')) AS OriginWac_i,
+
+    TRY_CONVERT(int, NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(20), DestAirportID))), '')) AS DestAirportID_i,
+    TRY_CONVERT(int, NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(20), DestAirportSeqID))), '')) AS DestAirportSeqID_i,
+    TRY_CONVERT(int, NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(20), DestCityMarketID))), '')) AS DestCityMarketID_i,
+    NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(100), DestCityName))), '') AS DestCityName_c,
+    NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(10), DestState))), '') AS DestState_c,
+    TRY_CONVERT(int, NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(20), DestStateFips))), '')) AS DestStateFips_i,
+    NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(100), DestStateName))), '') AS DestStateName_c,
+    TRY_CONVERT(int, NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(20), DestWac))), '')) AS DestWac_i,
+
+    NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(200), Marketing_Airline_Network))), '') AS Marketing_Airline_Network_c,
+    TRY_CONVERT(int, NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(20), DOT_ID_Marketing_Airline))), '')) AS DOT_ID_Marketing_Airline_i,
+    UPPER(NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(10), IATA_Code_Marketing_Airline))), '')) AS IATA_Code_Marketing_Airline_c,
+    NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(20), Flight_Number_Marketing_Airline))), '') AS Flight_Number_Marketing_Airline_c,
+
+    NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(200), Operating_Airline))), '') AS Operating_Airline_c,
+    TRY_CONVERT(int, NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(20), DOT_ID_Operating_Airline))), '')) AS DOT_ID_Operating_Airline_i,
+    UPPER(NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(10), IATA_Code_Operating_Airline))), '')) AS IATA_Code_Operating_Airline_c,
+    NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(20), Flight_Number_Operating_Airline))), '') AS Flight_Number_Operating_Airline_c,
+
     TRY_CONVERT(int, NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(20), Cancelled))), '')) AS Cancelled_i,
     TRY_CONVERT(int, NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(20), Diverted))), '')) AS Diverted_i,
     TRY_CONVERT(int, NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(20), CRSElapsedTime))), '')) AS CRSElapsedTime_i,
@@ -31,6 +59,8 @@ SELECT
 
     TRY_CONVERT(decimal(18,2), NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(30), Distance))), '')) AS Distance_n,
     TRY_CONVERT(int, NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(20), Flights))), '')) AS Flights_i,
+    TRY_CONVERT(int, NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(20), DistanceGroup))), '')) AS DistanceGroup_i,
+    TRY_CONVERT(int, NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(20), DivAirportLandings))), '')) AS DivAirportLandings_i,
 
     UPPER(NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(10), [Duplicate]))), '')) AS Duplicate_c
 INTO dbo.stg_flight_typed
@@ -117,201 +147,261 @@ WHERE Cancelled_i = 0
   AND CRSElapsedTime_i IS NULL;
 
 
-/* 6) BUSINESS RULES FINAL: TACH REJECT/CLEAN + DQ FLAG */
+/* 6) TAO CLEAN TABLE DON GIAN DE NAP DW */
 DROP TABLE IF EXISTS dbo.stg_flight_reject;
 DROP TABLE IF EXISTS dbo.stg_flight_clean;
 
-;WITH rules AS (
-    SELECT
-        t.*,
-
-        /* Hard rules: vi pham se bi reject */
-        CASE WHEN t.Duplicate_c IS NULL OR t.Duplicate_c <> 'N' THEN 1 ELSE 0 END AS r_duplicate,
-        CASE WHEN t.FlightDate_d IS NULL THEN 1 ELSE 0 END AS r_flightdate_invalid,
-        CASE WHEN t.Origin_c IS NULL OR LEN(t.Origin_c) <> 3 THEN 1 ELSE 0 END AS r_origin_invalid,
-        CASE WHEN t.Dest_c IS NULL OR LEN(t.Dest_c) <> 3 THEN 1 ELSE 0 END AS r_dest_invalid,
-        CASE WHEN t.Cancelled_i NOT IN (0,1) OR t.Cancelled_i IS NULL THEN 1 ELSE 0 END AS r_cancelled_invalid,
-        CASE WHEN t.Diverted_i NOT IN (0,1) OR t.Diverted_i IS NULL THEN 1 ELSE 0 END AS r_diverted_invalid,
-        CASE WHEN t.Distance_n IS NULL OR t.Distance_n <= 0 THEN 1 ELSE 0 END AS r_distance_invalid,
-        CASE WHEN t.Flights_i IS NULL OR t.Flights_i < 1 THEN 1 ELSE 0 END AS r_flights_invalid,
-
-        /* Soft rules: khong reject, chi gan canh bao */
-        CASE
-            WHEN ISNULL(t.Cancelled_i,0) = 0
-             AND ISNULL(t.Diverted_i,0) = 0
-             AND (t.CRSElapsedTime_i IS NULL OR t.CRSElapsedTime_i <= 0)
-            THEN 1 ELSE 0
-        END AS w_elapsed_missing_on_normal,
-        CASE
-            WHEN t.CRSDepTime_i IS NOT NULL
-             AND NOT (t.CRSDepTime_i BETWEEN 0 AND 2359 AND (t.CRSDepTime_i % 100) < 60)
-            THEN 1 ELSE 0
-        END AS w_deptime_invalid,
-        CASE
-            WHEN t.CRSArrTime_i IS NOT NULL
-             AND NOT (t.CRSArrTime_i BETWEEN 0 AND 2359 AND (t.CRSArrTime_i % 100) < 60)
-            THEN 1 ELSE 0
-        END AS w_arrtime_invalid
-    FROM dbo.stg_flight_typed t
-),
-scored AS (
-    SELECT
-        r.*,
-        CASE
-            WHEN r.r_duplicate + r.r_flightdate_invalid + r.r_origin_invalid + r.r_dest_invalid
-               + r.r_cancelled_invalid + r.r_diverted_invalid + r.r_distance_invalid + r.r_flights_invalid > 0
-            THEN 1 ELSE 0
-        END AS IsRejected,
-        CASE
-            WHEN r.w_elapsed_missing_on_normal + r.w_deptime_invalid + r.w_arrtime_invalid > 0
-            THEN 1 ELSE 0
-        END AS DQFlag,
-
-        CONCAT(
-            CASE WHEN r.r_duplicate = 1 THEN ';Duplicate_not_N' ELSE '' END,
-            CASE WHEN r.r_flightdate_invalid = 1 THEN ';FlightDate_invalid' ELSE '' END,
-            CASE WHEN r.r_origin_invalid = 1 THEN ';Origin_invalid' ELSE '' END,
-            CASE WHEN r.r_dest_invalid = 1 THEN ';Dest_invalid' ELSE '' END,
-            CASE WHEN r.r_cancelled_invalid = 1 THEN ';Cancelled_not_0_1' ELSE '' END,
-            CASE WHEN r.r_diverted_invalid = 1 THEN ';Diverted_not_0_1' ELSE '' END,
-            CASE WHEN r.r_distance_invalid = 1 THEN ';Distance_invalid' ELSE '' END,
-            CASE WHEN r.r_flights_invalid = 1 THEN ';Flights_invalid' ELSE '' END
-        ) AS RejectReasonRaw,
-
-        CONCAT(
-            CASE WHEN r.w_elapsed_missing_on_normal = 1 THEN ';Elapsed_missing_normal_flight' ELSE '' END,
-            CASE WHEN r.w_deptime_invalid = 1 THEN ';CRSDepTime_invalid' ELSE '' END,
-            CASE WHEN r.w_arrtime_invalid = 1 THEN ';CRSArrTime_invalid' ELSE '' END
-        ) AS WarningReasonRaw
-    FROM rules r
-),
-finalized AS (
-    SELECT
-        s.*,
-        CASE WHEN LEFT(s.RejectReasonRaw,1) = ';' THEN STUFF(s.RejectReasonRaw,1,1,'') ELSE s.RejectReasonRaw END AS RejectReason,
-        CASE WHEN LEFT(s.WarningReasonRaw,1) = ';' THEN STUFF(s.WarningReasonRaw,1,1,'') ELSE s.WarningReasonRaw END AS WarningReason,
-
-        CASE
-            WHEN s.CRSElapsedTime_i IS NOT NULL AND s.CRSElapsedTime_i > 0 THEN s.CRSElapsedTime_i
-            WHEN ISNULL(s.Cancelled_i,0) = 1 OR ISNULL(s.Diverted_i,0) = 1 THEN NULL
-            WHEN s.CRSDepTime_i BETWEEN 0 AND 2359
-             AND s.CRSArrTime_i BETWEEN 0 AND 2359
-             AND (s.CRSDepTime_i % 100) < 60
-             AND (s.CRSArrTime_i % 100) < 60
-            THEN
-                CASE
-                    WHEN (((s.CRSArrTime_i / 100) * 60 + (s.CRSArrTime_i % 100))
-                        - ((s.CRSDepTime_i / 100) * 60 + (s.CRSDepTime_i % 100))) < 0
-                    THEN (((s.CRSArrTime_i / 100) * 60 + (s.CRSArrTime_i % 100))
-                        - ((s.CRSDepTime_i / 100) * 60 + (s.CRSDepTime_i % 100)) + 1440)
-                    ELSE (((s.CRSArrTime_i / 100) * 60 + (s.CRSArrTime_i % 100))
-                        - ((s.CRSDepTime_i / 100) * 60 + (s.CRSDepTime_i % 100)))
-                END
-            ELSE NULL
-        END AS CRSElapsedTime_final
-    FROM scored s
-)
 SELECT
-    *
-INTO dbo.stg_flight_reject
-FROM finalized
-WHERE IsRejected = 1;
-
-;WITH rules AS (
-    SELECT
-        t.*,
-        CASE WHEN t.Duplicate_c IS NULL OR t.Duplicate_c <> 'N' THEN 1 ELSE 0 END AS r_duplicate,
-        CASE WHEN t.FlightDate_d IS NULL THEN 1 ELSE 0 END AS r_flightdate_invalid,
-        CASE WHEN t.Origin_c IS NULL OR LEN(t.Origin_c) <> 3 THEN 1 ELSE 0 END AS r_origin_invalid,
-        CASE WHEN t.Dest_c IS NULL OR LEN(t.Dest_c) <> 3 THEN 1 ELSE 0 END AS r_dest_invalid,
-        CASE WHEN t.Cancelled_i NOT IN (0,1) OR t.Cancelled_i IS NULL THEN 1 ELSE 0 END AS r_cancelled_invalid,
-        CASE WHEN t.Diverted_i NOT IN (0,1) OR t.Diverted_i IS NULL THEN 1 ELSE 0 END AS r_diverted_invalid,
-        CASE WHEN t.Distance_n IS NULL OR t.Distance_n <= 0 THEN 1 ELSE 0 END AS r_distance_invalid,
-        CASE WHEN t.Flights_i IS NULL OR t.Flights_i < 1 THEN 1 ELSE 0 END AS r_flights_invalid,
-        CASE
-            WHEN ISNULL(t.Cancelled_i,0) = 0
-             AND ISNULL(t.Diverted_i,0) = 0
-             AND (t.CRSElapsedTime_i IS NULL OR t.CRSElapsedTime_i <= 0)
-            THEN 1 ELSE 0
-        END AS w_elapsed_missing_on_normal,
-        CASE
-            WHEN t.CRSDepTime_i IS NOT NULL
-             AND NOT (t.CRSDepTime_i BETWEEN 0 AND 2359 AND (t.CRSDepTime_i % 100) < 60)
-            THEN 1 ELSE 0
-        END AS w_deptime_invalid,
-        CASE
-            WHEN t.CRSArrTime_i IS NOT NULL
-             AND NOT (t.CRSArrTime_i BETWEEN 0 AND 2359 AND (t.CRSArrTime_i % 100) < 60)
-            THEN 1 ELSE 0
-        END AS w_arrtime_invalid
-    FROM dbo.stg_flight_typed t
-),
-scored AS (
-    SELECT
-        r.*,
-        CASE
-            WHEN r.r_duplicate + r.r_flightdate_invalid + r.r_origin_invalid + r.r_dest_invalid
-               + r.r_cancelled_invalid + r.r_diverted_invalid + r.r_distance_invalid + r.r_flights_invalid > 0
-            THEN 1 ELSE 0
-        END AS IsRejected,
-        CASE
-            WHEN r.w_elapsed_missing_on_normal + r.w_deptime_invalid + r.w_arrtime_invalid > 0
-            THEN 1 ELSE 0
-        END AS DQFlag,
-        CONCAT(
-            CASE WHEN r.r_duplicate = 1 THEN ';Duplicate_not_N' ELSE '' END,
-            CASE WHEN r.r_flightdate_invalid = 1 THEN ';FlightDate_invalid' ELSE '' END,
-            CASE WHEN r.r_origin_invalid = 1 THEN ';Origin_invalid' ELSE '' END,
-            CASE WHEN r.r_dest_invalid = 1 THEN ';Dest_invalid' ELSE '' END,
-            CASE WHEN r.r_cancelled_invalid = 1 THEN ';Cancelled_not_0_1' ELSE '' END,
-            CASE WHEN r.r_diverted_invalid = 1 THEN ';Diverted_not_0_1' ELSE '' END,
-            CASE WHEN r.r_distance_invalid = 1 THEN ';Distance_invalid' ELSE '' END,
-            CASE WHEN r.r_flights_invalid = 1 THEN ';Flights_invalid' ELSE '' END
-        ) AS RejectReasonRaw,
-        CONCAT(
-            CASE WHEN r.w_elapsed_missing_on_normal = 1 THEN ';Elapsed_missing_normal_flight' ELSE '' END,
-            CASE WHEN r.w_deptime_invalid = 1 THEN ';CRSDepTime_invalid' ELSE '' END,
-            CASE WHEN r.w_arrtime_invalid = 1 THEN ';CRSArrTime_invalid' ELSE '' END
-        ) AS WarningReasonRaw
-    FROM rules r
-),
-finalized AS (
-    SELECT
-        s.*,
-        CASE WHEN LEFT(s.RejectReasonRaw,1) = ';' THEN STUFF(s.RejectReasonRaw,1,1,'') ELSE s.RejectReasonRaw END AS RejectReason,
-        CASE WHEN LEFT(s.WarningReasonRaw,1) = ';' THEN STUFF(s.WarningReasonRaw,1,1,'') ELSE s.WarningReasonRaw END AS WarningReason,
-        CASE
-            WHEN s.CRSElapsedTime_i IS NOT NULL AND s.CRSElapsedTime_i > 0 THEN s.CRSElapsedTime_i
-            WHEN ISNULL(s.Cancelled_i,0) = 1 OR ISNULL(s.Diverted_i,0) = 1 THEN NULL
-            WHEN s.CRSDepTime_i BETWEEN 0 AND 2359
-             AND s.CRSArrTime_i BETWEEN 0 AND 2359
-             AND (s.CRSDepTime_i % 100) < 60
-             AND (s.CRSArrTime_i % 100) < 60
-            THEN
-                CASE
-                    WHEN (((s.CRSArrTime_i / 100) * 60 + (s.CRSArrTime_i % 100))
-                        - ((s.CRSDepTime_i / 100) * 60 + (s.CRSDepTime_i % 100))) < 0
-                    THEN (((s.CRSArrTime_i / 100) * 60 + (s.CRSArrTime_i % 100))
-                        - ((s.CRSDepTime_i / 100) * 60 + (s.CRSDepTime_i % 100)) + 1440)
-                    ELSE (((s.CRSArrTime_i / 100) * 60 + (s.CRSArrTime_i % 100))
-                        - ((s.CRSDepTime_i / 100) * 60 + (s.CRSDepTime_i % 100)))
-                END
-            ELSE NULL
-        END AS CRSElapsedTime_final
-    FROM scored s
-)
-SELECT
-    *
+    t.*,
+    CASE
+        WHEN t.CRSElapsedTime_i IS NOT NULL AND t.CRSElapsedTime_i > 0 THEN t.CRSElapsedTime_i
+        WHEN ISNULL(t.Cancelled_i,0) = 1 OR ISNULL(t.Diverted_i,0) = 1 THEN NULL
+        WHEN t.CRSDepTime_i BETWEEN 0 AND 2359
+         AND t.CRSArrTime_i BETWEEN 0 AND 2359
+         AND (t.CRSDepTime_i % 100) < 60
+         AND (t.CRSArrTime_i % 100) < 60
+        THEN
+            CASE
+                WHEN (((t.CRSArrTime_i / 100) * 60 + (t.CRSArrTime_i % 100))
+                    - ((t.CRSDepTime_i / 100) * 60 + (t.CRSDepTime_i % 100))) < 0
+                THEN (((t.CRSArrTime_i / 100) * 60 + (t.CRSArrTime_i % 100))
+                    - ((t.CRSDepTime_i / 100) * 60 + (t.CRSDepTime_i % 100)) + 1440)
+                ELSE (((t.CRSArrTime_i / 100) * 60 + (t.CRSArrTime_i % 100))
+                    - ((t.CRSDepTime_i / 100) * 60 + (t.CRSDepTime_i % 100)))
+            END
+        ELSE NULL
+    END AS CRSElapsedTime_final
 INTO dbo.stg_flight_clean
-FROM finalized
-WHERE IsRejected = 0;
+FROM dbo.stg_flight_typed t;
 
-SELECT COUNT(*) AS reject_rows FROM dbo.stg_flight_reject;
 SELECT COUNT(*) AS clean_rows FROM dbo.stg_flight_clean;
 
+
+/* 7) TAO DIM_DATE */
+DROP TABLE IF EXISTS dbo.Dim_Date;
+
+CREATE TABLE dbo.Dim_Date (
+    DateKey int IDENTITY(1,1) PRIMARY KEY,
+    FlightDate date NOT NULL,
+    [Year] int NULL,
+    [Quarter] int NULL,
+    [Month] int NULL,
+    DayOfMonth int NULL,
+    DayOfWeek int NULL,
+    CONSTRAINT UQ_Dim_Date_FlightDate UNIQUE (FlightDate)
+);
+
+INSERT INTO dbo.Dim_Date (FlightDate, [Year], [Quarter], [Month], DayOfMonth, DayOfWeek)
 SELECT
-    DQFlag,
-    COUNT(*) AS rows_cnt
-FROM dbo.stg_flight_clean
-GROUP BY DQFlag
-ORDER BY DQFlag;
+    c.FlightDate_d,
+    MAX(c.Year_i) AS [Year],
+    MAX(c.Quarter_i) AS [Quarter],
+    MAX(c.Month_i) AS [Month],
+    MAX(c.DayOfMonth_i) AS DayOfMonth,
+    MAX(c.DayOfWeek_i) AS DayOfWeek
+FROM dbo.stg_flight_clean c
+WHERE c.FlightDate_d IS NOT NULL
+GROUP BY c.FlightDate_d;
+
+
+/* 8) TAO DIM_AIRLINE (DUNG CHUNG CHO MARKETING VA OPERATING) */
+DROP TABLE IF EXISTS dbo.Dim_Airline;
+
+CREATE TABLE dbo.Dim_Airline (
+    AirlineKey int IDENTITY(1,1) PRIMARY KEY,
+    DOT_ID int NULL,
+    IATA_Code nvarchar(10) NULL,
+    AirlineName nvarchar(200) NULL
+);
+
+INSERT INTO dbo.Dim_Airline (DOT_ID, IATA_Code, AirlineName)
+SELECT DISTINCT
+    x.DOT_ID,
+    x.IATA_Code,
+    x.AirlineName
+FROM (
+    SELECT
+        c.DOT_ID_Marketing_Airline_i AS DOT_ID,
+        c.IATA_Code_Marketing_Airline_c AS IATA_Code,
+        c.Marketing_Airline_Network_c AS AirlineName
+    FROM dbo.stg_flight_clean c
+    UNION
+    SELECT
+        c.DOT_ID_Operating_Airline_i AS DOT_ID,
+        c.IATA_Code_Operating_Airline_c AS IATA_Code,
+        c.Operating_Airline_c AS AirlineName
+    FROM dbo.stg_flight_clean c
+) x
+WHERE x.DOT_ID IS NOT NULL OR x.IATA_Code IS NOT NULL OR x.AirlineName IS NOT NULL;
+
+CREATE INDEX IX_Dim_Airline_DOT_IATA
+ON dbo.Dim_Airline (DOT_ID, IATA_Code);
+
+
+/* 9) TAO DIM_AIRPORT (DUNG CHUNG CHO ORIGIN VA DEST) */
+DROP TABLE IF EXISTS dbo.Dim_Airport;
+
+CREATE TABLE dbo.Dim_Airport (
+    AirportKey int IDENTITY(1,1) PRIMARY KEY,
+    AirportCode nvarchar(20) NULL,
+    AirportID int NULL,
+    AirportSeqID int NULL,
+    CityMarketID int NULL,
+    CityName nvarchar(100) NULL,
+    StateCode nvarchar(10) NULL,
+    StateFips int NULL,
+    StateName nvarchar(100) NULL,
+    Wac int NULL
+);
+
+INSERT INTO dbo.Dim_Airport (
+    AirportCode,
+    AirportID,
+    AirportSeqID,
+    CityMarketID,
+    CityName,
+    StateCode,
+    StateFips,
+    StateName,
+    Wac
+)
+SELECT DISTINCT
+    x.AirportCode,
+    x.AirportID,
+    x.AirportSeqID,
+    x.CityMarketID,
+    x.CityName,
+    x.StateCode,
+    x.StateFips,
+    x.StateName,
+    x.Wac
+FROM (
+    SELECT
+        c.Origin_c AS AirportCode,
+        c.OriginAirportID_i AS AirportID,
+        c.OriginAirportSeqID_i AS AirportSeqID,
+        c.OriginCityMarketID_i AS CityMarketID,
+        c.OriginCityName_c AS CityName,
+        c.OriginState_c AS StateCode,
+        c.OriginStateFips_i AS StateFips,
+        c.OriginStateName_c AS StateName,
+        c.OriginWac_i AS Wac
+    FROM dbo.stg_flight_clean c
+    UNION
+    SELECT
+        c.Dest_c AS AirportCode,
+        c.DestAirportID_i AS AirportID,
+        c.DestAirportSeqID_i AS AirportSeqID,
+        c.DestCityMarketID_i AS CityMarketID,
+        c.DestCityName_c AS CityName,
+        c.DestState_c AS StateCode,
+        c.DestStateFips_i AS StateFips,
+        c.DestStateName_c AS StateName,
+        c.DestWac_i AS Wac
+    FROM dbo.stg_flight_clean c
+) x
+WHERE x.AirportCode IS NOT NULL;
+
+CREATE INDEX IX_Dim_Airport_Code_Id
+ON dbo.Dim_Airport (AirportCode, AirportID);
+
+
+/* 10) TAO FACT_FLIGHT */
+DROP TABLE IF EXISTS dbo.Fact_Flight;
+
+CREATE TABLE dbo.Fact_Flight (
+    FactFlightKey bigint IDENTITY(1,1) PRIMARY KEY,
+    DateKey int NOT NULL,
+    MarketingAirlineKey int NULL,
+    OperatingAirlineKey int NULL,
+    OriginAirportKey int NULL,
+    DestAirportKey int NULL,
+    Flights int NULL,
+    Distance decimal(18,2) NULL,
+    CRSElapsedTime int NULL,
+    DistanceGroup int NULL,
+    DivAirportLandings int NULL,
+    Cancelled bit NULL,
+    Diverted bit NULL,
+    FlightNumberMarketing nvarchar(20) NULL,
+    FlightNumberOperating nvarchar(20) NULL
+);
+
+INSERT INTO dbo.Fact_Flight (
+    DateKey,
+    MarketingAirlineKey,
+    OperatingAirlineKey,
+    OriginAirportKey,
+    DestAirportKey,
+    Flights,
+    Distance,
+    CRSElapsedTime,
+    DistanceGroup,
+    DivAirportLandings,
+    Cancelled,
+    Diverted,
+    FlightNumberMarketing,
+    FlightNumberOperating
+)
+SELECT
+    d.DateKey,
+    ma.AirlineKey AS MarketingAirlineKey,
+    oa.AirlineKey AS OperatingAirlineKey,
+    ao.AirportKey AS OriginAirportKey,
+    ad.AirportKey AS DestAirportKey,
+    c.Flights_i AS Flights,
+    c.Distance_n AS Distance,
+    c.CRSElapsedTime_final AS CRSElapsedTime,
+    c.DistanceGroup_i AS DistanceGroup,
+    c.DivAirportLandings_i AS DivAirportLandings,
+    TRY_CONVERT(bit, c.Cancelled_i) AS Cancelled,
+    TRY_CONVERT(bit, c.Diverted_i) AS Diverted,
+    c.Flight_Number_Marketing_Airline_c AS FlightNumberMarketing,
+    c.Flight_Number_Operating_Airline_c AS FlightNumberOperating
+FROM dbo.stg_flight_clean c
+INNER JOIN dbo.Dim_Date d
+    ON d.FlightDate = c.FlightDate_d
+LEFT JOIN dbo.Dim_Airline ma
+    ON ma.DOT_ID = c.DOT_ID_Marketing_Airline_i
+   AND ISNULL(ma.IATA_Code, '') = ISNULL(c.IATA_Code_Marketing_Airline_c, '')
+LEFT JOIN dbo.Dim_Airline oa
+    ON oa.DOT_ID = c.DOT_ID_Operating_Airline_i
+   AND ISNULL(oa.IATA_Code, '') = ISNULL(c.IATA_Code_Operating_Airline_c, '')
+LEFT JOIN dbo.Dim_Airport ao
+    ON ao.AirportCode = c.Origin_c
+   AND ISNULL(ao.AirportID, -1) = ISNULL(c.OriginAirportID_i, -1)
+LEFT JOIN dbo.Dim_Airport ad
+    ON ad.AirportCode = c.Dest_c
+   AND ISNULL(ad.AirportID, -1) = ISNULL(c.DestAirportID_i, -1);
+
+CREATE INDEX IX_Fact_Flight_Date ON dbo.Fact_Flight (DateKey);
+CREATE INDEX IX_Fact_Flight_Route ON dbo.Fact_Flight (OriginAirportKey, DestAirportKey);
+CREATE INDEX IX_Fact_Flight_Airline ON dbo.Fact_Flight (MarketingAirlineKey, OperatingAirlineKey);
+
+
+/* 11) DOI SOAT KET QUA NAP DW */
+SELECT COUNT(*) AS clean_rows FROM dbo.stg_flight_clean;
+SELECT COUNT(*) AS fact_rows FROM dbo.Fact_Flight;
+
+SELECT
+    (SELECT SUM(CAST(ISNULL(c.Flights_i, 0) AS bigint)) FROM dbo.stg_flight_clean c) AS clean_total_flights,
+    (SELECT SUM(CAST(ISNULL(f.Flights, 0) AS bigint)) FROM dbo.Fact_Flight f) AS fact_total_flights;
+
+SELECT
+    CAST(100.0 * SUM(CASE WHEN c.Cancelled_i = 1 THEN 1 ELSE 0 END) / NULLIF(COUNT(*),0) AS decimal(9,4)) AS clean_cancelled_pct,
+    CAST(100.0 * SUM(CASE WHEN c.Diverted_i = 1 THEN 1 ELSE 0 END) / NULLIF(COUNT(*),0) AS decimal(9,4)) AS clean_diverted_pct
+FROM dbo.stg_flight_clean c;
+
+SELECT
+    CAST(100.0 * SUM(CASE WHEN f.Cancelled = 1 THEN 1 ELSE 0 END) / NULLIF(COUNT(*),0) AS decimal(9,4)) AS fact_cancelled_pct,
+    CAST(100.0 * SUM(CASE WHEN f.Diverted = 1 THEN 1 ELSE 0 END) / NULLIF(COUNT(*),0) AS decimal(9,4)) AS fact_diverted_pct
+FROM dbo.Fact_Flight f;
+
+SELECT
+    SUM(CAST(CASE WHEN f.MarketingAirlineKey IS NULL THEN 1 ELSE 0 END AS bigint)) AS fact_missing_marketing_airline_key,
+    SUM(CAST(CASE WHEN f.OperatingAirlineKey IS NULL THEN 1 ELSE 0 END AS bigint)) AS fact_missing_operating_airline_key,
+    SUM(CAST(CASE WHEN f.OriginAirportKey IS NULL THEN 1 ELSE 0 END AS bigint)) AS fact_missing_origin_airport_key,
+    SUM(CAST(CASE WHEN f.DestAirportKey IS NULL THEN 1 ELSE 0 END AS bigint)) AS fact_missing_dest_airport_key
+FROM dbo.Fact_Flight f;
+
+
